@@ -24,6 +24,27 @@ in programming, from databases to compilers, graphics, etc.
 
 # Recursion
 
+Let's see how we would represent this SparQL query in our AST using
+primitive recursion.  A parser would be the process involved in the
+conversion from a String like this to a Scala datatype.
+
+&nbsp;
+
+```sparql
+CONSTRUCT
+{
+  ?d a dm:Document .
+  ?d dm:docSource ?src .
+}
+WHERE
+{
+  ?d a dm:Document .
+  ?d dm:docSource ?src .
+}
+```
+
+# Recursion
+
 Here's the datatype we're going to focus on during the whole talk.  It
 represents a SparQL algebra.
 
@@ -46,26 +67,7 @@ off the AST for brevity._
 
 # Recursion
 
-Let's see how we would represent this SparQL query in our AST using
-primitive recursion.  A parser would be the process involved in this
-conversion.
-
-&nbsp;
-
-```sparql
-CONSTRUCT
-{
-  ?d a dm:Document .
-  ?d dm:docSource ?src .
-}
-WHERE
-{
-  ?d a dm:Document .
-  ?d dm:docSource ?src .
-}
-```
-
-# Recursion
+After parsing we would get something like this.
 
 ```scala mdoc:silent
 val expr: Expr = Expr.Construct(
@@ -89,8 +91,10 @@ val expr: Expr = Expr.Construct(
 
 # Counting the nodes in our AST
 
-We could create a function that counted all nodes we have in our AST,
-let's se how!
+Here we can see how we create a function that counts nodes in the tree
+using **primitive recursion**.
+
+&nbsp;
 
 ```scala mdoc
 def countNodes(expr: Expr): Int = expr match {
@@ -112,28 +116,37 @@ that there's even a GoF entry for it, the **`Visitor`**.
 
 ```scala mdoc
 trait Visitor[T] {
-  def visitBGP(x: Expr.BGP): T
-  def visitTriple(x: Expr.Triple): T
-  def visitUnion(x: Expr.Union): T
-  def visitJoin(x: Expr.Join): T
-  def visitConstruct(x: Expr.Construct): T
-  def visitSelect(x: Expr.Select): T
+  def visitBGP(triples: Seq[Expr.Triple]): T
+  def visitTriple(s: String, p: String, o: String): T
+  def visitUnion(l: T, r: T): T
+  def visitJoin(l: T, r: T): T
+  def visitConstruct(vars: Seq[String], bgp: T, r: T): T
+  def visitSelect(vars: Seq[String], r: T): T
 }
 ```
+
+Notice how, every time recursion appeared, now we're using our generic
+type **`T`**.
 
 # Visiting nodes
 
 With **`applyVisitor`** we create a general way of applying any
 **`Visitor[T]`** to our expression.
 
+&nbsp;
+
 ```scala mdoc
 def applyVisitor[T](expr: Expr, visitor: Visitor[T]): T = expr match {
-  case x @ Expr.BGP(triples) => visitor.visitBGP(x)
-  case x @ Expr.Triple(s, p, o) => visitor.visitTriple(x)
-  case x @ Expr.Union(l, r) => visitor.visitUnion(x)
-  case x @ Expr.Join(l, r) => visitor.visitJoin(x)
-  case x @ Expr.Construct(vars, bgp, r) => visitor.visitConstruct(x)
-  case x @ Expr.Select(vars, r) => visitor.visitSelect(x)
+  case x @ Expr.BGP(triples) => visitor.visitBGP(triples)
+  case x @ Expr.Triple(s, p, o) => visitor.visitTriple(s, p, o)
+  case x @ Expr.Union(l, r) =>
+    visitor.visitUnion(applyVisitor(l, visitor), applyVisitor(r, visitor))
+  case x @ Expr.Join(l, r) =>
+    visitor.visitJoin(applyVisitor(l, visitor), applyVisitor(r, visitor))
+  case x @ Expr.Construct(vars, bgp, r) =>
+    visitor.visitConstruct(vars, applyVisitor(bgp, visitor), applyVisitor(r, visitor))
+  case x @ Expr.Select(vars, r) =>
+    visitor.visitSelect(vars, applyVisitor(r, visitor))
 }
 ```
 
@@ -142,12 +155,12 @@ def applyVisitor[T](expr: Expr, visitor: Visitor[T]): T = expr match {
 
 ```scala mdoc
 val countNodesVisitor: Visitor[Int] = new Visitor[Int] {
-  def visitBGP(x: Expr.BGP) = 1 + x.triples.length
-  def visitTriple(x: Expr.Triple) = 1
-  def visitUnion(x: Expr.Union) = 1 + countNodes(x.l) + countNodes(x.r)
-  def visitJoin(x: Expr.Join) = 1 + countNodes(x.l) + countNodes(x.r)
-  def visitConstruct(x: Expr.Construct) = 1 + countNodes(x.r)
-  def visitSelect(x: Expr.Select) = 1 + countNodes(x.r)
+  def visitBGP(triples: Seq[Expr.Triple]) = 1 + triples.length
+  def visitTriple(s: String, p: String, o: String) = 1
+  def visitUnion(l: Int, r: Int) = 1 + l + r
+  def visitJoin(l: Int, r: Int) = 1 + l + r
+  def visitConstruct(vars: Seq[String], bgp: Int, r: Int) = 1 + bgp + r
+  def visitSelect(vars: Seq[String], r: Int) = 1 + r
 }
 
 applyVisitor(expr, countNodesVisitor)
@@ -163,8 +176,9 @@ Let's dive into some of the concepts we'll need for applying them.
 # Abstracting recursion away
 
 In order to apply recursion schemes, we need to **factor recursion out**
-of our datatypes.  There will be other types (**Fixpoint** types) in
-charge of tying the recursion knot.
+of our datatypes.
+
+&nbsp;
 
 ```scala mdoc
 sealed trait ExprF[A]
@@ -180,11 +194,16 @@ object ExprF {
 }
 ```
 
+&nbsp;
+
+We'll substitute **primitive recursion** with the newly introduced
+generic type.
+
 # Abstracting recursion away
 
 We have abstracted recursion by introducing a new type parameter to
 our datatype, this made it possible to implement several interesting
-typeclasses for it:
+**typeclasses** for it:
 
 ```scala
 Functor[ExprF] // will allow us to use `map` on it
@@ -195,8 +214,6 @@ This is why we will call this type our **_Pattern functor_**.
 
 # Abstracting recursion away
 
-But now our trees are not able to express recursion anymore!
-
 ```scala mdoc:fail
 def expr[A]: ExprF[A] =
   ExprF.JoinF[A](
@@ -205,14 +222,18 @@ def expr[A]: ExprF[A] =
   )
 ```
 
-We don't have a **`ExprF[A]`**, but a **`ExprF[ExprF[...]]`**...
+. . .
+
+\begin{alertblock}{Warning}
+Now we can't express recursion anymore, We don't have a \texttt{ExprF[A]}, but a \texttt{ExprF[ExprF[...]]}...
+\end{alertblock}
 
 # Fixpoint types
 
 **Fixpoint types** will make it possible to express recursion again
 with our parametric ASTs.
 
-There are several fixpoint types, the most common one is `Fix`.
+There are several fixpoint types, the most common one is **`Fix`**.
 
 ```scala mdoc
 case class Fix[F[_]](unFix: F[Fix[F]])
@@ -453,6 +474,46 @@ val rerefold = scheme.hylo(countNodesAndLispify, toPatternFunctor)
 
 ```scala mdoc
 rerefold(expr2)
+```
+
+# Optimizations
+
+Something very interesting we can do with recursion schemes is
+optimizations to our AST.
+
+. . .
+
+\begin{alertblock}{This is a showcase IDK if it is semantically correct for SparQL}
+Let's say we want to translate Join operations of BGP to just BPGs.
+\end{alerblock}
+
+. . .
+
+```scala mdoc:silent
+def joinsToBGPs[T](implicit T: Basis[Expr2F, T]): Trans[Expr2F, Expr2F, T] =
+  Trans {
+    case j @ JoinF(l, r) =>
+      (T.coalgebra(l), T.coalgebra(r)) match {
+        case (BGPF(t1), BGPF(t2)) => BGPF(t1 ++ t2)
+        case _ => j
+      }
+    case otherwise => otherwise
+  }
+```
+
+# Optimizations
+
+```scala mdoc:silent
+val join = Expr2.Join(
+  Expr2.BGP(List(Expr2.Triple("?s", ":type", ":Doc"))),
+  Expr2.BGP(List(Expr2.Triple("?s", ":references", ":Ontology"))),
+)
+
+val transformAndLispify = scheme.hylo(lispify, joinsToBGPs.coalgebra)
+```
+
+```scala mdoc
+transformAndLispify(join)
 ```
 
 # More things we get with recursion schemes
