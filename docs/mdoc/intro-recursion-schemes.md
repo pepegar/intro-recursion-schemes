@@ -24,6 +24,9 @@ in programming, from databases to compilers, graphics, etc.
 
 # Recursion
 
+Here's the datatype we're going to focus on during the whole talk.  It
+represents a SparQL algebra.
+
 ```scala mdoc:silent
 sealed trait Expr
 
@@ -188,6 +191,8 @@ Functor[ExprF] // will allow us to use `map` on it
 Traverse[ExprF] // so that we can use `traverse` on `ExprF` values
 ```
 
+This is why we will call this type our **_Pattern functor_**.
+
 # Abstracting recursion away
 
 But now our trees are not able to express recursion anymore!
@@ -230,11 +235,34 @@ val exprF: Fix[ExprF] =
 
 # Fixpoint types
 
- **`Fix`** is not the only fixpoint type.  There's **`Attr`** for example,
+**`Fix`** is not the only fixpoint type.  There's **`Attr`** for example,
 with which we can add annotations to nodes in our tree.
 
 And there's also **`Expr`**.  Our first ADT, **`Expr`** is a fixpoint of
 **`ExprF`**!
+
+# Fixpoint types
+
+Droste provides a couple of typeclasses for that relate **pattern
+functors** and **fixpoint types** together.
+
+&nbsp;
+
+```scala mdoc
+trait Embed[F[_], R] {
+  def embed(fa: F[R]): R
+}
+
+trait Project[F[_], R] {
+  def embed(r: R): F[R]
+}
+```
+
+&nbsp;
+
+**`Embed`** takes an instance of the pattern functor and puts it inside the fixpoint type.
+
+**`Project`** takes a fixpoint type and peels of a layer, exposing the pattern functor.
 
 # `@deriveFixedPoint`
 
@@ -243,12 +271,13 @@ can generate it at compile time with the **`@deriveFixedPoint`** macro
 annotation from droste!
 
 ```scala mdoc
+import cats.implicits._
 import higherkindness.droste.macros.deriveFixedPoint
 
 @deriveFixedPoint sealed trait Expr2
 
 object Expr2 {
-  final case class BGP(triples: Seq[Triple]) extends Expr2
+  final case class BGP(triples: List[Expr2]) extends Expr2
   final case class Triple(s: String, p: String, o: String) extends Expr2
   final case class Union(l: Expr2, r: Expr2) extends Expr2
   final case class Join(l: Expr2, r: Expr2) extends Expr2
@@ -261,6 +290,17 @@ object Expr2 {
 
 This macro annotation will generate a new `object fixedpoint` inside
 the companion object of our ADT with all the boilerplate.
+
+```scala mdoc
+
+// ...
+object fixedpoint {
+  implicit val embed: Embed[ExprF, Expr2] = ???
+  implicit val project: Project[ExprF, Expr2] = ???
+}
+// ...
+
+```
 
 # folds
 
@@ -275,8 +315,7 @@ In order to consume a recursive structure, we can use a
 **`catamorphism`**.  Catamorphisms consume a recursive value and produce
 something out of it. `fold`, or `reduce` are catamorphisms.
 
-Notice that we don't need to recurse manually anymore, but the
-_recursive_ values are given to us in the `Algebra`.
+Algebras are like Visitors, but generic on the pattern functor.
 
 ```scala mdoc:invisible
 import Expr2.fixedpoint._
@@ -285,25 +324,31 @@ import higherkindness.droste.syntax.all._
 
 val expr2: Expr2 = Expr2.Construct(
   vars = List("?d", "?src"),
-  bgp = Expr2.BGP(List(Expr2.Triple(
+  bgp = Expr2.BGP(List(
+    Expr2.Triple(
       "?d",
       "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
       "http://id.gsk.com/dm/1.0/Document"
     ),
-    Expr2.Triple("?d", "http://id.gsk.com/dm/1.0/docSource", "?src"))
+    Expr2.Triple("?d", "http://id.gsk.com/dm/1.0/docSource", "?src")
+  )
   ),
-  r = Expr2.BGP(List(Expr2.Triple(
+  r = Expr2.BGP(List(
+    Expr2.Triple(
       "?d",
       "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
       "http://id.gsk.com/dm/1.0/Document"
     ),
-    Expr2.Triple("?d", "http://id.gsk.com/dm/1.0/docSource", "?src"))
+    Expr2.Triple("?d", "http://id.gsk.com/dm/1.0/docSource", "?src")
+  )
   )
 )
 ```
 
 ```scala mdoc:silent
-// Algebras in recursion schemes are like visitors, but generic on the datatype
+/**
+ * type Algebra[F[_], A] = F[A] => A
+ */
 val countNodes: Algebra[Expr2F, Int] = Algebra {
   case BGPF(triples) => 1 + triples.length
   case TripleF(s, p, o) => 1
@@ -325,12 +370,16 @@ count(expr2)
 # Unfolding (producing new trees)
 
 Unfolding is the **dual** of folding, meaning that we'll produce new
-recursive expressions of plain values.
+recursive expressions of plain values.  We can use an anamorphism for
+unfolding.
 
-Parsing is an example of unfolding!
+Coalgebras are the dual of Algebras.
 
 ```scala mdoc:silent
-val coalgebra: Coalgebra[Expr2F, Expr2] =
+/**
+ * type Coalgebra[F[_], A] = A => F[A]
+ */
+val toPatternFunctor: Coalgebra[Expr2F, Expr2] =
   Coalgebra[Expr2F, Expr2] {
     case Expr2.BGP(triples) => BGPF(triples)
     case Expr2.Triple(s, p, o) => TripleF(s, p, o)
@@ -340,13 +389,71 @@ val coalgebra: Coalgebra[Expr2F, Expr2] =
     case Expr2.Select(vars, r) => SelectF(vars, r)
   }
 
-val parse = scheme.ana(coalgebra)
+val convert = scheme.ana(toPatternFunctor)
+```
 
-parse(expr2)
+# Unfolding (producing new trees)
+
+```scala mdoc
+convert(expr2)
 ```
 
 # re-folding (folding after unfolding)
 
+We can already compose our functions to convert our datatype and then
+calculate the number of nodes.
+
+```scala mdoc
+val composed: Expr2 => Int = expr => count(convert(expr))
+
+composed(expr2)
+```
+
+# re-folding (folding after unfolding)
+
+However with recursion schemes we can use a `refold`, that is, a
+recursion scheme that appilies a fold after an unfold!  The most
+common one is the **`hylomorphism`**:
+
+```scala mdoc
+val refold = scheme.hylo(countNodes, toPatternFunctor)
+
+refold(expr2)
+```
+
+&nbsp;
+
+The benefit we get from `hylo` is that it applies **fusion**, a technique
+in which intermediate values are not fully built, but passed from the
+**coalgebra** to the **algebra** as soon as they're created.
+
+# Zipping
+
+Something else that recursion schemes provide is zipping so that in a
+single pass we can apply more than one Algebra.
+
+```scala mdoc:silent
+// create _something like_ Apache Jena representation of SparQL algebra
+val lispify: Algebra[Expr2F, String] = Algebra {
+  case BGPF(triples) => s"(bgp\n${triples.mkString("\n")})"
+  case TripleF(s, p, o) => s"(triple $s $p $o)"
+  case UnionF(l, r) => s"(union\n$l $r)"
+  case JoinF(l, r) => s"(join\n$l $r)"
+  case ConstructF(vars, bgp, r) => s"(construct (${vars.mkString(" ")})\n$bgp\n$r)"
+  case SelectF(vars, r) => s"(select (${vars.mkString(" ")})\n$r)"
+}
+
+// Zip algebras together
+val countNodesAndLispify: Algebra[Expr2F, (Int, String)] = countNodes.zip(lispify)
+
+val rerefold = scheme.hylo(countNodesAndLispify, toPatternFunctor)
+```
+
+# Zipping
+
+```scala mdoc
+rerefold(expr2)
+```
 
 # More things we get with recursion schemes
 
