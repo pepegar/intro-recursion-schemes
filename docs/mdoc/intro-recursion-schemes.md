@@ -269,7 +269,7 @@ functors** and **fixpoint types** together.
 
 &nbsp;
 
-```scala mdoc
+```scala
 trait Embed[F[_], R] {
   def embed(fa: F[R]): R
 }
@@ -277,6 +277,8 @@ trait Embed[F[_], R] {
 trait Project[F[_], R] {
   def embed(r: R): F[R]
 }
+
+trait Basis[F[_], R] extends Embed[F, R] with Project[F, R]
 ```
 
 &nbsp;
@@ -293,6 +295,7 @@ annotation from droste!
 
 ```scala mdoc
 import cats.implicits._
+import higherkindness.droste._
 import higherkindness.droste.macros.deriveFixedPoint
 
 @deriveFixedPoint sealed trait Expr2
@@ -479,7 +482,7 @@ rerefold(expr2)
 # Optimizations
 
 Something very interesting we can do with recursion schemes is
-optimizations to our AST.
+optimizations to our AST.  We'll use the `Trans` datatype from Droste.
 
 . . .
 
